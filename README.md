@@ -13,7 +13,7 @@ with a rumble command (the only host-to-gamepad channel the API has).
 | `board/lib/gamepad.py` | HID gamepad class built on `machine.USBDevice`. Uses the Stadia controller's vendor/product IDs so Chrome enables rumble and its "standard" mapping. |
 | `board/lib/usb/` | `usb-device` + `usb-device-hid` from micropython-lib (vendored). |
 | `board/main.py` | Runs on the camera: idle sine-wave sticks + heartbeat, and the rumble-triggered pixel stream. |
-| `web/index.html` | Gamepad visualiser, capture button, pixel-stream decoder. No build step. |
+| `docs/index.html` | Gamepad visualiser, scan button, pixel-stream decoder. No build step; also what GitHub Pages serves. |
 | `tools/flash.sh` | Flash `firmware/build` over DFU. |
 | `tools/deploy.sh` | Copy `board/` to the camera's `/flash` and reset it. |
 | `tools/repl.sh` | REPL without a soft reset. |
@@ -95,8 +95,10 @@ weak_lo, weak_hi]`.
 
 ## Web page
 
+Published from `docs/` by GitHub Pages. To run it locally instead:
+
 ```bash
-python3 -m http.server -d web 8000
+python3 -m http.server -d docs 8000
 ```
 
 Open http://localhost:8000 in Chrome. Chrome only exposes a gamepad after a
