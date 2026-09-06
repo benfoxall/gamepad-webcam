@@ -1,0 +1,174 @@
+diff --git a/lib/micropython b/lib/micropython
+--- a/lib/micropython
++++ b/lib/micropython
+@@ -1 +1 @@
+-Subproject commit dd984559aa42841908b78397b7dac32f57da803f
++Subproject commit dd984559aa42841908b78397b7dac32f57da803f-dirty
+diff --git a/ports/alif/main.c b/ports/alif/main.c
+index 20955a7..db1202f 100644
+--- a/ports/alif/main.c
++++ b/ports/alif/main.c
+@@ -53,6 +53,7 @@
+ 
+ #if OMV_USB_STACK_TINYUSB
+ #include "tusb.h"
++#include "shared/tinyusb/mp_usbd.h"
+ #endif
+ 
+ #if MICROPY_PY_LWIP
+@@ -178,9 +179,9 @@ soft_reset:
+ 
+     // Initialize TinyUSB after the filesystem is mounted.
+     #if MICROPY_HW_ENABLE_USBDEV
+-    if (!tusb_inited()) {
+-        tusb_init();
+-    }
++    // Initializes TinyUSB if needed, and (re)connects the port if a
++    // runtime USB device was disconnected by a previous soft reset.
++    mp_usbd_init();
+     #endif
+ 
+     #if CORE_M55_HP
+@@ -243,6 +244,10 @@ soft_reset_exit:
+     #endif
+     machine_pwm_deinit_all();
+     machine_pin_irq_deinit();
++    #if MICROPY_HW_ENABLE_USB_RUNTIME_DEVICE
++    // Tear down any Python-defined USB device before the heap goes away.
++    mp_usbd_deinit();
++    #endif
+     imlib_deinit();
+     soft_timer_deinit();
+     dma_deinit_all();
+diff --git a/ports/alif/mp_config.h b/ports/alif/mp_config.h
+index a8c1787..be50e94 100644
+--- a/ports/alif/mp_config.h
++++ b/ports/alif/mp_config.h
+@@ -48,6 +48,9 @@
+         stdio_channel_pyexec_hook(false);                                 \
+     } while (0);
+ 
++// Enable machine.USBDevice (runtime USB device support) on the HP core.
++#define MICROPY_HW_ENABLE_USB_RUNTIME_DEVICE (CORE_M55_HP)
++
+ #define MICROPY_ENABLE_VM_ABORT             (1)
+ #define MICROPY_OPT_COMPUTED_GOTO           (1)
+ #define MICROPY_GC_SPLIT_HEAP               (1)
+diff --git a/protocol/omv_protocol_channel_tinyusb.c b/protocol/omv_protocol_channel_tinyusb.c
+index 27bac46..a84fdd6 100644
+--- a/protocol/omv_protocol_channel_tinyusb.c
++++ b/protocol/omv_protocol_channel_tinyusb.c
+@@ -134,8 +134,14 @@ void tud_cdc_line_state_cb(uint8_t instance, bool dtr, bool rts) {
+     tud_cdc_get_line_coding(&coding);
+ 
+     if (!dtr) {
++        // Only discard pending TX data when the IDE protocol channel was in
++        // use. Clearing the CDC TX FIFO on a plain serial disconnect while a
++        // transfer is in flight (e.g. a traceback being printed when mpremote
++        // gives up) has been observed to wedge the USB controller on the AE3.
++        if (usb_channel_active) {
++            tud_cdc_write_clear();
++        }
+         usb_channel_active = false;
+-        tud_cdc_write_clear();
+     } else {
+         usb_channel_active = (coding.bit_rate == OMV_PROTOCOL_MAGIC_BAUDRATE);
+         if (usb_channel_active && usbd_edpt_stalled(TUD_OPT_RHPORT, USBD_CDC_EP_IN)) {
+diff --git a/ports/alif/alif.mk b/ports/alif/alif.mk
+index 16490b33..e649d64b 100644
+--- a/lib/micropython/ports/alif/alif.mk
++++ b/lib/micropython/ports/alif/alif.mk
+@@ -169,6 +169,7 @@ SHARED_SRC_C += $(addprefix shared/,\
+ 	tinyusb/mp_usbd.c \
+ 	tinyusb/mp_usbd_cdc.c \
+ 	tinyusb/mp_usbd_descriptor.c \
++	tinyusb/mp_usbd_runtime.c \
+ 	)
+ 
+ DRIVERS_SRC_C += $(addprefix drivers/,\
+diff --git a/ports/alif/boards/OPENMV_AE3/mpconfigboard.h b/ports/alif/boards/OPENMV_AE3/mpconfigboard.h
+index a4981ce1..d1e4020c 100644
+--- a/lib/micropython/ports/alif/boards/OPENMV_AE3/mpconfigboard.h
++++ b/lib/micropython/ports/alif/boards/OPENMV_AE3/mpconfigboard.h
+@@ -3,7 +3,9 @@
+ 
+ #define MICROPY_OBJ_REPR            (MICROPY_OBJ_REPR_C)
+ 
+-#define MICROPY_HW_USB_MSC          (CORE_M55_HP)
++// Mass storage disabled: the Alif USB driver supports IN endpoints 0x81-0x83
++// only, and CDC (2 IN) + the runtime HID gamepad (1 IN) already use them all.
++#define MICROPY_HW_USB_MSC          (0)
+ #define MICROPY_HW_ENABLE_HW_I2C    (1)
+ #define MICROPY_HW_ENABLE_OSPI      (CORE_M55_HP)
+ 
+diff --git a/ports/alif/mpconfigport.h b/ports/alif/mpconfigport.h
+index 57e5fed7..7ccd1011 100644
+--- a/lib/micropython/ports/alif/mpconfigport.h
++++ b/lib/micropython/ports/alif/mpconfigport.h
+@@ -163,10 +163,13 @@
+ #if MICROPY_HW_USB_MSC
+ #define MICROPY_FATFS_USE_LABEL                 (1)
+ #define MICROPY_FATFS_MULTI_PARTITION           (1)
++#endif
+ // Set FatFS block size to flash sector size to avoid caching
+ // the flash sector in memory to support smaller block sizes.
++// Kept independent of USB MSC so the on-flash format does not change
++// when MSC is disabled (a 512-byte-sector FAT on 4096-byte blocks was
++// unreadable by host tools).
+ #define MICROPY_FATFS_MAX_SS                    (MICROPY_HW_FLASH_BLOCK_SIZE_BYTES)
+-#endif
+ 
+ #ifndef MICROPY_BOARD_NETWORK_INTERFACES
+ #define MICROPY_BOARD_NETWORK_INTERFACES
+diff --git a/ports/alif/tinyusb_port/tusb_alif_dcd.c b/ports/alif/tinyusb_port/tusb_alif_dcd.c
+index c8f86082..596b015e 100644
+--- a/lib/micropython/ports/alif/tinyusb_port/tusb_alif_dcd.c
++++ b/lib/micropython/ports/alif/tinyusb_port/tusb_alif_dcd.c
+@@ -480,6 +480,17 @@ void USB_IRQHandler(void)
+ 
+ static uint8_t _dcd_cmd_wait(uint8_t ep, uint8_t typ, uint16_t param)
+ {
++    // The USB ISR also issues endpoint commands (XferNotReady/XferComplete
++    // handling), so a command sequence started from thread context must not
++    // be interleaved with it: two DEPCMDs in flight corrupt the command
++    // registers and the cmdact poll below never completes (observed as the
++    // whole USB stack wedging when HID reports and CDC traffic overlap).
++    // Mask the USB IRQ for the duration unless the caller already did.
++    bool irq_enabled = NVIC_GetEnableIRQ(USB_IRQ_IRQn);
++    if (irq_enabled) {
++        NVIC_DisableIRQ(USB_IRQ_IRQn);
++    }
++
+     // capture phy state and disable lpm and suspend
+     uint32_t phycfg = ugbl->gusb2phycfg0;
+     ugbl->gusb2phycfg0_b.enblslpm = 0;
+@@ -497,7 +508,11 @@ static uint8_t _dcd_cmd_wait(uint8_t ep, uint8_t typ, uint16_t param)
+     // restore phy state
+     ugbl->gusb2phycfg0 = phycfg;
+ 
+-    return udev->depcmd[ep].depcmd_b.cmdstatus;
++    uint8_t status = udev->depcmd[ep].depcmd_b.cmdstatus;
++    if (irq_enabled) {
++        NVIC_EnableIRQ(USB_IRQ_IRQn);
++    }
++    return status;
+ }
+ 
+ 
+@@ -695,10 +710,14 @@ static uint8_t _dcd_start_xfer(uint8_t ep, void* buf, uint32_t size, uint8_t typ
+     udev->depcmd[ep].par1 = (uint32_t) LocalToGlobal(_xfer_trb[ep]);
+     udev->depcmd[ep].par0 = 0;
+ 
++    // issue the block command with the USB IRQ still masked, so the ISR
++    // cannot slip in another endpoint command between the parameter
++    // writes and the dispatch (see _dcd_cmd_wait).
++    uint8_t status = _dcd_cmd_wait(ep, CMDTYP_DEPSTRTXFER, 0);
++
+     dcd_int_enable(TUD_OPT_RHPORT);
+ 
+-    // issue the block command and pass the status
+-    return _dcd_cmd_wait(ep, CMDTYP_DEPSTRTXFER, 0);
++    return status;
+ }
+ 
+ #endif // CFG_TUD_ENABLED

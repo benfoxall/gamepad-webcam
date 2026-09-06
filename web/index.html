@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gamepad Camera</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e9ef; --muted: #8a93a6;
+    --accent: #5ac8fa; --ok: #4cd964; --warn: #ffcc00; --bad: #ff5c5c;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { color: var(--muted); }
+  #status.ok { color: var(--ok); }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px; max-width: 1200px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  button { background: var(--accent); color: #05131a; border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { background: var(--line); color: var(--muted); cursor: default; }
+  button.secondary { background: var(--line); color: var(--text); }
+  label { color: var(--muted); }
+  .bars { display: grid; grid-template-columns: 40px 1fr 60px; gap: 4px 8px; align-items: center; }
+  .bar { height: 10px; background: var(--bg); border-radius: 3px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+  .btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  .btn { width: 26px; height: 22px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); display: grid; place-items: center; font-size: 10px; color: var(--muted); }
+  .btn.on { background: var(--accent); color: #05131a; border-color: var(--accent); }
+  canvas { display: block; background: var(--bg); border-radius: 6px; image-rendering: pixelated; }
+  #scope { width: 100%; height: 120px; }
+  .sticks { display: flex; gap: 12px; }
+  .stick { width: 120px; height: 120px; }
+  .imgwrap { position: relative; width: 100%; aspect-ratio: 4 / 3; }
+  .imgwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #beam { background: transparent; }
+  #log { height: 160px; overflow: auto; background: var(--bg); border-radius: 6px; padding: 8px; color: var(--muted); white-space: pre-wrap; }
+  .kv { color: var(--muted); }
+  .kv b { color: var(--text); font-weight: 500; }
+  .wide { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gamepad Camera</h1>
+  <span id="status">No gamepad. Connect the camera and wait for its heartbeat button press.</span>
+</header>
+<main>
+  <section>
+    <h2>Gamepad</h2>
+    <div class="kv" id="gpinfo">—</div>
+    <div class="btns" id="buttons"></div>
+    <div class="bars" id="axes" style="margin-top:10px"></div>
+  </section>
+
+  <section>
+    <h2>Live sticks</h2>
+    <div class="sticks">
+      <canvas class="stick" id="lstick" width="120" height="120"></canvas>
+      <canvas class="stick" id="rstick" width="120" height="120"></canvas>
+      <div class="kv" style="flex:1">
+        <div>left (beam): <b id="lval">—</b></div>
+        <div>right (colour): <b id="rval">—</b></div>
+        <div>triggers: <b id="tval">—</b></div>
+        <div>samples/s: <b id="rate">—</b></div>
+        <div>pixels/s: <b id="pxrate">—</b></div>
+      </div>
+    </div>
+    <canvas id="scope" width="600" height="120" style="margin-top:10px"></canvas>
+  </section>
+
+  <section class="wide">
+    <h2>Scan</h2>
+    <div class="row">
+      <button id="scan" disabled>Start / stop scan (rumble)</button>
+      <button id="clear" class="secondary">Clear</button>
+      <label><input type="checkbox" id="interleaved"> interleaved</label>
+      <label><input type="checkbox" id="showbeam" checked> show beam</label>
+      <label><input type="checkbox" id="persist"> persist image</label>
+      <span class="kv">frame <b id="fw">?</b>×<b id="fh">?</b> · pass <b id="pass">—</b> · frames <b id="frames">0</b> · pixels <b id="count">0</b> · coverage <b id="coverage">0%</b> · parity <b id="parity">—</b></span>
+    </div>
+    <div style="display:grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-top: 10px">
+      <div class="imgwrap">
+        <canvas id="image" width="32" height="24"></canvas>
+        <canvas id="beam" width="320" height="240"></canvas>
+      </div>
+      <div id="log"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status'), logEl = $('log');
+  const log = (m) => { logEl.textContent += `${new Date().toLocaleTimeString()} ${m}\n`; logEl.scrollTop = logEl.scrollHeight; };
+
+  // ---- Protocol -----------------------------------------------------------
+  // Board sends 16-bit values on 6 axes. Chrome normalises axes to -1..1 and
+  // triggers to 0..1; both are recoverable to 16 bits.
+  const q16axis = (a) => Math.round((a + 1) / 2 * 65535);
+  const q16trig = (v) => Math.round(v * 65535);
+  const to = (axis, n) => Math.round((axis + 1) / 2 * (n - 1));   // axis -> 0..n-1
+  // In interleaved mode the board freezes one capture and sends it over N
+  // passes, so the finished image is a single moment; rows arrive in a
+  // spread-out order (0, 5, 2, 7, ...) and each is stretched down over the
+  // rows still missing until their own pass arrives.
+
+  // Chrome's "standard" mapping for the Stadia IDs (see board/lib/gamepad.py).
+  function decode(gp) {
+    const a = gp.axes, b = gp.buttons;
+    const v = (i) => (b[i] ? b[i].value : 0);
+    const p = (i) => (b[i] ? b[i].pressed : false);
+    return {
+      lx: a[0], ly: a[1], rx: a[2], ry: a[3], lt: v(6), rt: v(7),
+      px: [q16axis(a[2]), q16axis(a[3]), q16trig(v(6)), q16trig(v(7))],
+      A: p(0), X: p(2), Y: p(3), L1: p(4), R1: p(5),
+    };
+  }
+  // RGB565 -> [r, g, b]
+  const rgb565 = (v) => [((v >> 11) & 31) * 255 / 31, ((v >> 5) & 63) * 255 / 63, (v & 31) * 255 / 31];
+
+  // ---- State ---------------------------------------------------------------
+  let gpIndex = null;
+  let W = 32, H = 24, N = 1, pass = 0, pixelsGot = 0, frames = 0, lastKey = -1, lastParity = null, lastPass = -1;
+  let seen = null;                 // Uint8Array per pixel: received this frame?
+  let rowSeen = null;              // Uint8Array per row: real data received (interleaved stretch fill)
+  let pxCount = 0, pxRateT = performance.now();
+  const img = $('image'), ictx = img.getContext('2d');
+  const beam = $('beam'), bctx = beam.getContext('2d');
+  let imageData = null;
+
+  function resetImage(w, h) {
+    if (w) { W = w; H = h; }
+    img.width = W; img.height = H;
+    imageData = ictx.createImageData(W, H);
+    for (let i = 3; i < imageData.data.length; i += 4) imageData.data[i] = 255;
+    ictx.putImageData(imageData, 0, 0);
+    seen = new Uint8Array(W * H);
+    rowSeen = new Uint8Array(H);
+    pixelsGot = 0; lastKey = -1;
+    $('fw').textContent = W; $('fh').textContent = H;
+    $('count').textContent = '0'; $('coverage').textContent = '0%';
+  }
+  resetImage();
+  $('clear').onclick = () => { resetImage(); frames = 0; $('frames').textContent = '0'; };
+
+  function paint(idx, v) {
+    if (idx < 0 || idx >= W * H) return;
+    const [r, g, b] = rgb565(v);
+    const o = idx * 4;
+    imageData.data[o] = r; imageData.data[o + 1] = g; imageData.data[o + 2] = b;
+    if (!seen[idx]) { seen[idx] = 1; pixelsGot++; }
+    pxCount++;
+    // Interleaved: stretch this row down over the rows that have no real
+    // data yet (CRT style); they get overwritten when their pass arrives.
+    if (N > 1) {
+      const row = Math.floor(idx / W), col = idx % W;
+      rowSeen[row] = 1;
+      for (let k = 1; k < N && row + k < H; k++) {
+        if (rowSeen[row + k]) break;
+        const oo = ((row + k) * W + col) * 4;
+        imageData.data[oo] = r; imageData.data[oo + 1] = g; imageData.data[oo + 2] = b;
+      }
+    }
+  }
+  function drawBeam(idx) {
+    bctx.clearRect(0, 0, beam.width, beam.height);
+    if (!$('showbeam').checked || idx < 0) return;
+    const sx = beam.width / W, sy = beam.height / H;
+    const x = (idx % W) * sx, y = Math.floor(idx / W) * sy;
+    bctx.fillStyle = 'rgba(255,255,255,0.85)';
+    bctx.fillRect(x, y, sx * 4, sy);
+    bctx.strokeStyle = 'rgba(90,200,250,0.6)';
+    bctx.strokeRect(0.5, y + 0.5, beam.width - 1, sy - 1);
+  }
+
+  // ---- Gamepad discovery ---------------------------------------------------
+  window.addEventListener('gamepadconnected', (e) => {
+    gpIndex = e.gamepad.index;
+    statusEl.textContent = `Connected: ${e.gamepad.id}`; statusEl.className = 'ok';
+    $('gpinfo').innerHTML = `id <b>${e.gamepad.id}</b><br>mapping <b>${e.gamepad.mapping || '(none)'}</b> · buttons <b>${e.gamepad.buttons.length}</b> · axes <b>${e.gamepad.axes.length}</b> · haptics <b>${e.gamepad.vibrationActuator ? 'yes' : 'no'}</b>`;
+    if (e.gamepad.mapping !== 'standard') log('warning: mapping is not "standard"; decoding assumes Chrome\'s Stadia mapping');
+    $('scan').disabled = !e.gamepad.vibrationActuator;
+    log(`gamepad connected: ${e.gamepad.id} (mapping=${e.gamepad.mapping || 'none'}, haptics=${!!e.gamepad.vibrationActuator})`);
+    if (!e.gamepad.vibrationActuator) log('no vibrationActuator: the scan trigger will not work in this browser');
+    buildWidgets(e.gamepad);
+  });
+  window.addEventListener('gamepaddisconnected', (e) => {
+    if (e.gamepad.index === gpIndex) {
+      gpIndex = null; statusEl.textContent = 'Gamepad disconnected.'; statusEl.className = '';
+      $('scan').disabled = true;
+      log('gamepad disconnected');
+    }
+  });
+  function buildWidgets(gp) {
+    $('buttons').innerHTML = gp.buttons.map((_, i) => `<div class="btn" id="b${i}">${i}</div>`).join('');
+    $('axes').innerHTML = gp.axes.map((_, i) => `<span class="kv">ax ${i}</span><div class="bar"><i id="a${i}"></i></div><span class="kv" id="av${i}"></span>`).join('');
+  }
+
+  // ---- Rumble = toggle scanning on the board ------------------------------
+  async function rumble(strong, weak, duration) {
+    const gp = navigator.getGamepads()[gpIndex];
+    if (!gp || !gp.vibrationActuator) return log('no haptics available');
+    try {
+      const r = await gp.vibrationActuator.playEffect('dual-rumble', { startDelay: 0, duration, strongMagnitude: strong, weakMagnitude: weak });
+      log(`rumble strong=${strong} weak=${weak} ${duration}ms -> ${r}`);
+    } catch (err) { log(`rumble failed: ${err}`); }
+  }
+  // Weak channel = mode (>= 0.25 means interleaved). Toggling the checkbox
+  // while scanning switches mode on the board without stopping.
+  const modeWeak = () => ($('interleaved').checked ? 1.0 : 0.0);
+  $('scan').onclick = () => rumble(1.0, modeWeak(), 100);
+  $('interleaved').onchange = () => { if (scanning) rumble(1.0, modeWeak(), 100); };
+
+  // ---- Stick / scope drawing ----------------------------------------------
+  const scope = $('scope'), sctx = scope.getContext('2d');
+  const history = [];
+  function drawStick(canvas, x, y, label, color) {
+    const c = canvas.getContext('2d'), s = canvas.width;
+    c.clearRect(0, 0, s, s);
+    c.strokeStyle = '#262b36'; c.strokeRect(0.5, 0.5, s - 1, s - 1);
+    c.beginPath(); c.moveTo(s / 2, 0); c.lineTo(s / 2, s); c.moveTo(0, s / 2); c.lineTo(s, s / 2); c.stroke();
+    c.fillStyle = color; c.beginPath(); c.arc((x + 1) / 2 * s, (y + 1) / 2 * s, 6, 0, Math.PI * 2); c.fill();
+    c.fillStyle = '#8a93a6'; c.fillText(label, 4, 12);
+  }
+  function drawScope() {
+    const w = scope.width, h = scope.height;
+    sctx.clearRect(0, 0, w, h);
+    const colors = ['#5ac8fa', '#4cd964', '#ffcc00', '#ff5c5c'];
+    for (let k = 0; k < 4; k++) {
+      sctx.strokeStyle = colors[k]; sctx.beginPath();
+      history.forEach((s, i) => { const x = i / history.length * w, y = (1 - (s[k] + 1) / 2) * (h - 2) + 1; i ? sctx.lineTo(x, y) : sctx.moveTo(x, y); });
+      sctx.stroke();
+    }
+  }
+
+  // ---- Poll loop -----------------------------------------------------------
+  let samples = 0, rateT = performance.now();
+  let scanning = false;
+  function frame() {
+    requestAnimationFrame(frame);
+    if (gpIndex === null) return;
+    const gp = navigator.getGamepads()[gpIndex];
+    if (!gp) return;
+    const d = decode(gp);
+
+    // widgets
+    gp.buttons.forEach((b, i) => { const el = $('b' + i); if (el) el.className = 'btn' + (b.pressed ? ' on' : ''); });
+    gp.axes.forEach((a, i) => { const el = $('a' + i); if (el) { const pct = (a + 1) / 2 * 100; el.style.left = Math.min(50, pct) + '%'; el.style.width = Math.abs(pct - 50) + '%'; $('av' + i).textContent = a.toFixed(3); } });
+    const [cr, cg, cb] = rgb565(d.px[0]);
+    drawStick($('lstick'), d.lx, d.ly, 'L beam', '#5ac8fa');
+    drawStick($('rstick'), d.rx, d.ry, 'R colour', d.L1 ? `rgb(${cr|0},${cg|0},${cb|0})` : '#4cd964');
+    $('lval').textContent = `${d.lx.toFixed(3)}, ${d.ly.toFixed(3)}`;
+    $('rval').textContent = `${d.rx.toFixed(3)}, ${d.ry.toFixed(3)}`;
+    $('tval').textContent = `${d.lt.toFixed(3)}, ${d.rt.toFixed(3)}`;
+    history.push([d.lx, d.ly, d.rx, d.ry]); if (history.length > 300) history.shift();
+    drawScope();
+    samples++; const now = performance.now();
+    if (now - rateT > 1000) {
+      $('rate').textContent = Math.round(samples * 1000 / (now - rateT)); samples = 0; rateT = now;
+      $('pxrate').textContent = Math.round(pxCount * 1000 / (now - pxRateT)); pxCount = 0; pxRateT = now;
+    }
+
+    // protocol
+    const parity = d.X ? 1 : 0;
+    if (d.Y) {
+      // frame start: left stick = W, H; right stick = interleave N, pass p
+      const w = Math.round((d.lx + 1) / 2 * 255), h = Math.round((d.ly + 1) / 2 * 255);
+      const n = Math.max(1, Math.round((d.rx + 1) / 2 * 255)), p = Math.round((d.ry + 1) / 2 * 255);
+      if ((parity !== lastParity || p !== lastPass) && w > 1 && h > 1 && w <= 256 && h <= 256) {
+        lastParity = parity; lastPass = p; $('parity').textContent = parity;
+        N = n; pass = p; $('pass').textContent = N > 1 ? `${p + 1}/${N}` : '—';
+        if (w !== W || h !== H) resetImage(w, h);
+        else if (p === 0 && !$('persist').checked) resetImage();  // new frame = new moment
+        if (p === 0) { frames++; $('frames').textContent = frames; }
+        scanning = true;
+        log(N > 1 ? `frame ${frames} pass ${p + 1}/${N} (${w}x${h})` : `frame ${frames} start ${w}x${h}`);
+      }
+      drawBeam(-1);
+      return;
+    }
+    if (d.L1) {
+      const col = to(d.lx, W), row = to(d.ly, H);
+      const idx = row * W + col;
+      if (idx !== lastKey) {
+        lastKey = idx;
+        for (let k = 0; k < 4; k++) paint(idx + k, d.px[k]);
+        ictx.putImageData(imageData, 0, 0);
+        $('count').textContent = pixelsGot;
+        $('coverage').textContent = Math.round(pixelsGot * 100 / (W * H)) + '%';
+      }
+      drawBeam(idx);
+      if (d.R1 && scanning && (N === 1 || pass === N - 1)) { scanning = false; log(`frame ${frames} end: ${pixelsGot}/${W * H} pixels (${Math.round(pixelsGot * 100 / (W * H))}%)`); }
+      return;
+    }
+    drawBeam(-1);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

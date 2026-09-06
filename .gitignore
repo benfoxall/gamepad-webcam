@@ -1,0 +1,15 @@
+# Built firmware images (12 MB, and rebuildable from
+# firmware/openmv-usb-runtime.patch). romfs*.img are the stock OpenMV model
+# and library images, unchanged by this project.
+# Drop this rule if you would rather ship flashable binaries with the repo.
+firmware/build/
+
+# Board log pulled off /flash during debugging
+boot.log
+
+# Python bytecode from syntax-checking the board scripts on the host
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
