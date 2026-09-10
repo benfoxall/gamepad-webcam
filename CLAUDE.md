@@ -12,6 +12,8 @@ with a rumble command (the only host-to-gamepad channel the API has).
 | `board/lib/usb/` | `usb-device` + `usb-device-hid` from micropython-lib (vendored). |
 | `board/main.py` | Runs on the camera: idle sine-wave sticks + heartbeat, and the rumble-triggered pixel stream. |
 | `docs/index.html` | Gamepad visualiser, scan button, pixel-stream decoder. No build step; also what GitHub Pages serves. |
+| `docs/sw.js` | Service worker: caches the page shell so it works offline. |
+| `docs/manifest.webmanifest`, `docs/icon.svg` | Web app manifest and icon, so the page can be installed. |
 | `tools/flash.sh` | Flash `firmware/build` over DFU. |
 | `tools/deploy.sh` | Copy `board/` to the camera's `/flash` and reset it. |
 | `tools/repl.sh` | REPL without a soft reset. |
@@ -101,3 +103,22 @@ python3 -m http.server -d docs 8000
 
 Open http://localhost:8000 in Chrome. Chrome only exposes a gamepad after a
 button press, which the board's heartbeat provides.
+
+## Offline
+
+`docs/sw.js` caches the page shell (`./`, `index.html`, the manifest and the
+icon) so everything after the first load runs with no network — handy when the
+camera is the only thing plugged in. The page is self-contained, so that is the
+whole app.
+
+The strategy is stale-while-revalidate: the cached copy is served immediately
+and refreshed in the background, so an edit to `index.html` shows up on the
+*second* load after it ships. Editing `sw.js` installs a new worker, and the
+page then offers an "update ready" chip with a reload button in the header
+rather than swapping under a running scan; `VERSION` in `sw.js` names the cache and old
+ones are deleted on activate.
+
+Service workers need `https://` or `localhost`, so `file://` and plain-HTTP
+hosts silently skip registration (the page still works, just not offline).
+While developing, "Update on reload" in DevTools → Application avoids having to
+think about any of this.

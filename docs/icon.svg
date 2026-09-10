@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Gamepad Camera">
+  <rect width="512" height="512" fill="#0f1115"/>
+  <!-- gamepad body -->
+  <rect x="56" y="152" width="400" height="216" rx="76" fill="#171a21" stroke="#262b36" stroke-width="12"/>
+  <!-- d-pad -->
+  <rect x="112" y="240" width="88" height="30" rx="8" fill="#8a93a6"/>
+  <rect x="141" y="211" width="30" height="88" rx="8" fill="#8a93a6"/>
+  <!-- lens, standing in for the camera -->
+  <circle cx="344" cy="260" r="66" fill="#0f1115" stroke="#5ac8fa" stroke-width="14"/>
+  <circle cx="344" cy="260" r="28" fill="#5ac8fa"/>
+  <!-- scanline sweeping the lens -->
+  <rect x="262" y="252" width="164" height="16" fill="#4cd964" opacity="0.85"/>
+</svg>
