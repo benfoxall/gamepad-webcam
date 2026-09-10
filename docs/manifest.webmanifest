@@ -1,0 +1,15 @@
+{
+  "name": "Gamepad Camera",
+  "short_name": "GamepadCam",
+  "description": "Streams pixels out of an OpenMV camera that pretends to be a USB gamepad.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

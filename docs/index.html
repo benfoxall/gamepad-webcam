@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <title>Gamepad Camera</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="#0f1115">
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e9ef; --muted: #8a93a6;
@@ -40,12 +44,17 @@
   .kv { color: var(--muted); }
   .kv b { color: var(--text); font-weight: 500; }
   .wide { grid-column: 1 / -1; }
+  #sw { margin-left: auto; color: var(--muted); display: none; }
+  #sw.show { display: inline; }
+  #sw.offline { color: var(--warn); }
+  #sw button { padding: 4px 8px; font-size: 11px; margin-left: 6px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Gamepad Camera</h1>
   <span id="status">No gamepad. Connect the camera and wait for its heartbeat button press.</span>
+  <span id="sw"></span>
 </header>
 <main>
   <section>
@@ -90,6 +99,74 @@
     </div>
   </section>
 </main>
+
+<script>
+// ---- Offline ---------------------------------------------------------------
+// The page is self-contained, so the service worker only has to keep the shell
+// around (see sw.js). Everything after the first load works with the camera
+// plugged in and no network.
+(() => {
+  const el = document.getElementById('sw');
+  let msg = null;                  // 'offline ready' / update prompt, once earned
+  let onUpdate = null;
+
+  function render() {
+    if (!navigator.onLine) { el.textContent = 'offline'; el.className = 'show offline'; return; }
+    if (!msg) { el.className = ''; return; }
+    el.textContent = msg;
+    el.className = 'show';
+    if (onUpdate) {
+      const b = document.createElement('button');
+      b.textContent = 'reload';
+      b.onclick = onUpdate;
+      el.append(b);
+    }
+  }
+
+  const show = (text, update = null) => { msg = text; onUpdate = update; render(); };
+
+  addEventListener('online', render);
+  addEventListener('offline', render);
+  render();
+
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+
+  const hadController = !!navigator.serviceWorker.controller;
+
+  addEventListener('load', async () => {
+    let reg;
+    try {
+      reg = await navigator.serviceWorker.register('sw.js');
+    } catch (e) {
+      console.warn('service worker registration failed', e);
+      return;
+    }
+
+    const offerUpdate = (worker) => show('update ready', () => worker.postMessage({ type: 'skip-waiting' }));
+
+    // A waiting worker means a newer page is already cached.
+    if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const worker = reg.installing;
+      if (!worker) return;
+      worker.addEventListener('statechange', () => {
+        if (worker.state !== 'installed') return;
+        if (navigator.serviceWorker.controller) offerUpdate(worker);
+        else show('offline ready');
+      });
+    });
+
+    // Only a swap to an updated worker reloads: the first-visit claim() also
+    // fires controllerchange, and reloading there would be pointless churn.
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      location.reload();
+    });
+  });
+})();
+</script>
 
 <script>
 (() => {
